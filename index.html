@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Static Proxy Front‑End</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b0f15;
+      --panel: #121825;
+      --text: #e6edf3;
+      --muted: #9fb1c1;
+      --accent: #7bdcb5;
+      --accent-2: #7aa2f7;
+      --bad: #ff6b6b;
+      --good: #22c55e;
+      --border: #243042;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+    }
+    header {
+      padding: 14px; border-bottom: 1px solid var(--border); background: #0d1320;
+      position: sticky; top: 0; z-index: 5;
+    }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .bar {
+      display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; width: 100%;
+    }
+    input[type="text"], input[type="url"], input[type="number"], textarea, select {
+      width: 100%; padding: 10px 12px; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      font-size: 14px;
+    }
+    textarea { min-height: 120px; font-family: var(--mono) }
+    button {
+      padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+      background: #172134; color: var(--text); cursor: pointer; font-weight: 600;
+      transition: transform .05s ease;
+    }
+    button:active { transform: translateY(1px) }
+    button.accent { background: linear-gradient(180deg, #1d2a41, #15203a); border-color: #2b3a55; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    main { display: grid; grid-template-columns: 420px 1fr; gap: 16px; padding: 16px; }
+    @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+    .card { background: #0e1526; border: 1px solid var(--border); border-radius: var(--radius); }
+    .card h3 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 15px; color: var(--muted) }
+    .card .body { padding: 12px; }
+    .kv { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .pill { padding: 4px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); background: #0c1322; color: var(--muted) }
+    .status.ok { color: var(--good) } .status.bad { color: var(--bad) }
+    .mono { font-family: var(--mono); }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .cols-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .scroll { overflow: auto; max-height: 60vh; }
+    .h-iframe { min-height: 65vh; width: 100%; border: 0; border-top: 1px dashed var(--border); border-radius: 0 0 var(--radius) var(--radius); background: #0a0f1a; }
+    .muted { color: var(--muted); }
+    .row small a { color: var(--accent-2); text-decoration: none }
+    .tag { background: #11203a; border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; font-size: 12px; color: var(--muted) }
+    .divider { height: 1px; background: var(--border); margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <strong>Static Proxy</strong>
+      <span class="pill mono" id="cfgStatus">config: unset</span>
+      <small class="muted">Set your Worker base below. Requests go to /proxy/&lt;base64url&gt; on that origin.</small>
+    </div>
+    <div class="bar" style="margin-top:10px">
+      <input id="addr" type="url" placeholder="https://example.com or wss://echo.websocket.events" />
+      <select id="method">
+        <option>GET</option><option>POST</option><option>PUT</option>
+        <option>PATCH</option><option>DELETE</option><option>HEAD</option>
+      </select>
+      <button class="accent" id="sendBtn">Send</button>
+      <button id="openFrameBtn" title="Open in embedded iframe">Open</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h3>Request</h3>
+      <div class="body">
+        <div class="cols">
+          <div>
+            <label class="muted">Worker base</label>
+            <input id="workerBase" type="url" placeholder="https://your-worker.workers.dev" />
+          </div>
+          <div>
+            <label class="muted">x-proxy-key (optional)</label>
+            <input id="proxyKey" type="text" placeholder="kept in localStorage only" />
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="cols">
+          <div>
+            <label class="muted">Custom headers (one per line: Name: Value)</label>
+            <textarea id="headersBox" class="mono" placeholder="X-Example: 123"></textarea>
+          </div>
+          <div>
+            <label class="muted">Body (auto-sent for non-GET/HEAD)</label>
+            <textarea id="bodyBox" class="mono" placeholder='{"name":"test"}'></textarea>
+            <div class="row" style="margin-top:6px; gap:8px">
+              <input id="fileInput" type="file" />
+              <span class="muted">If a file is selected, it overrides the text body.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="cols">
+          <div class="row" style="gap:8px">
+            <button id="saveCfg">Save config</button>
+            <button id="clearCfg">Clear config</button>
+          </div>
+          <div class="row" style="gap:8px; justify-content:flex-end">
+            <span class="tag">CORS-aware fetch</span>
+            <span class="tag">Redirect rewriting</span>
+            <span class="tag">WS bridge</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Response</h3>
+      <div class="body">
+        <div class="cols">
+          <div class="kv">
+            <div class="muted">Status</div>
+            <div class="mono" id="statusCell">—</div>
+            <div class="muted">Endpoint</div>
+            <div class="mono" id="endpointCell">—</div>
+          </div>
+          <div class="row" style="gap:8px; justify-content:flex-end">
+            <button id="downloadBtn" disabled>Download</button>
+            <button id="copyCurlBtn" disabled>Copy cURL</button>
+            <button id="viewRawBtn" disabled>Raw</button>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="cols">
+          <div>
+            <h4 class="muted" style="margin:0 0 6px 0">Headers</h4>
+            <div class="scroll" id="respHeaders"></div>
+          </div>
+          <div>
+            <h4 class="muted" style="margin:0 0 6px 0">Body preview</h4>
+            <pre class="scroll mono" id="respBody" style="padding:12px;background:#0a0f1a;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Embedded browser</h3>
+      <div class="body">
+        <div class="row" style="justify-content:space-between">
+          <small class="muted">Opens the proxied page inside an iframe. Navigation won’t sync back to the address bar due to cross-origin.</small>
+          <div class="row" style="gap:8px">
+            <button id="popoutBtn">Open in new tab</button>
+          </div>
+        </div>
+      </div>
+      <iframe id="frame" class="h-iframe" sandbox="allow-scripts allow-forms allow-same-origin allow-popups"></iframe>
+    </section>
+
+    <section class="card">
+      <h3>WebSocket tester</h3>
+      <div class="body">
+        <div class="cols-3">
+          <input id="wsUrl" type="url" placeholder="wss://echo.websocket.events" />
+          <button id="wsConnect">Connect</button>
+          <button id="wsClose" disabled>Close</button>
+        </div>
+        <div class="row" style="margin-top:8px; gap:8px">
+          <input id="wsMsg" type="text" placeholder="Message…" />
+          <button id="wsSend" disabled>Send</button>
+        </div>
+        <pre id="wsLog" class="mono scroll" style="margin-top:10px; padding:12px; background:#0a0f1a; border:1px dashed var(--border); border-radius:8px; max-height:40vh"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // --------------------------
+    // Config
+    // --------------------------
+    const els = {
+      addr: byId('addr'), method: byId('method'), sendBtn: byId('sendBtn'),
+      workerBase: byId('workerBase'), proxyKey: byId('proxyKey'),
+      headersBox: byId('headersBox'), bodyBox: byId('bodyBox'),
+      statusCell: byId('statusCell'), endpointCell: byId('endpointCell'),
+      respHeaders: byId('respHeaders'), respBody: byId('respBody'),
+      downloadBtn: byId('downloadBtn'), copyCurlBtn: byId('copyCurlBtn'), viewRawBtn: byId('viewRawBtn'),
+      cfgStatus: byId('cfgStatus'),
+      frame: byId('frame'), openFrameBtn: byId('openFrameBtn'), popoutBtn: byId('popoutBtn'),
+      saveCfg: byId('saveCfg'), clearCfg: byId('clearCfg'),
+      wsUrl: byId('wsUrl'), wsConnect: byId('wsConnect'), wsClose: byId('wsClose'), wsSend: byId('wsSend'), wsMsg: byId('wsMsg'), wsLog: byId('wsLog'),
+      fileInput: byId('fileInput'),
+    };
+
+    // Load persisted config
+    const STATE = loadState();
+    if (STATE.workerBase) els.workerBase.value = STATE.workerBase;
+    if (STATE.proxyKey) els.proxyKey.value = STATE.proxyKey;
+    if (STATE.headers) els.headersBox.value = STATE.headers;
+    updateCfgStatus();
+
+    // --------------------------
+    // Helpers
+    // --------------------------
+    function byId(id) { return document.getElementById(id); }
+
+    function toBase64Url(s) {
+      const b = btoa(unescape(encodeURIComponent(s)));
+      return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+    function fromBase64Url(s) {
+      const pad = s.length % 4 === 2 ? "==" : s.length % 4 === 3 ? "=" : "";
+      const t = s.replace(/-/g, "+").replace(/_/g, "/") + pad;
+      return decodeURIComponent(escape(atob(t)));
+    }
+    function buildEndpoint(target) {
+  const base = (els.workerBase.value || "").replace(/\/+$/, "");
+  if (!base) throw new Error("Set Worker base");
+
+  const encoded = toBase64Url(target);
+  const proxyUrl = `${base}/proxy/${encoded}`;
+
+  // Wrap with Codetabs CORS proxy
+  return `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(proxyUrl)}`;
+}
+    function parseHeaderLines(text) {
+      const headers = new Headers();
+      (text || "").split(/\r?\n/).forEach(line => {
+        const i = line.indexOf(":");
+        if (i > 0) {
+          const name = line.slice(0, i).trim();
+          const value = line.slice(i + 1).trim();
+          if (name) headers.append(name, value);
+        }
+      });
+      return headers;
+    }
+    function headersToText(headers) {
+      const arr = [];
+      for (const [k, v] of headers.entries()) arr.push(`${k}: ${v}`);
+      return arr.join("\n");
+    }
+    function saveState() {
+      const s = {
+        workerBase: els.workerBase.value.trim(),
+        proxyKey: els.proxyKey.value.trim(),
+        headers: els.headersBox.value,
+      };
+      localStorage.setItem("static-proxy-state", JSON.stringify(s));
+      updateCfgStatus();
+    }
+    function loadState() {
+      try { return JSON.parse(localStorage.getItem("static-proxy-state") || "{}"); }
+      catch { return {}; }
+    }
+    function updateCfgStatus() {
+      const base = (els.workerBase.value || "").trim();
+      const ok = /^https?:\/\/[^ ]+$/i.test(base);
+      els.cfgStatus.textContent = ok ? `config: ${base}` : "config: unset";
+    }
+    function guessViewer(contentType) {
+      if (!contentType) return "text";
+      const ct = contentType.split(";")[0].trim().toLowerCase();
+      if (ct.includes("application/json")) return "json";
+      if (ct.startsWith("text/") || ct.includes("xml") || ct.includes("svg")) return "text";
+      return "binary";
+    }
+
+    // --------------------------
+    // Fetch flow
+    // --------------------------
+    let lastResponseBlob = null;
+    let lastRequest = null;
+
+    els.sendBtn.addEventListener("click", async () => {
+      try {
+        const target = (els.addr.value || "").trim();
+        if (!target) return alert("Enter a target URL");
+        const endpoint = buildEndpoint(target);
+        els.endpointCell.textContent = endpoint;
+
+        const method = els.method.value;
+        const custom = parseHeaderLines(els.headersBox.value);
+        const headers = new Headers();
+
+        // Copy in custom headers
+        for (const [k, v] of custom.entries()) headers.append(k, v);
+        // Optional proxy key
+        if (els.proxyKey.value.trim()) headers.set("x-proxy-key", els.proxyKey.value.trim());
+
+        // Body: file overrides text
+        let body = undefined;
+        if (!["GET", "HEAD"].includes(method)) {
+          const file = els.fileInput.files && els.fileInput.files[0];
+          if (file) {
+            body = file;
+            if (!headers.has("content-type")) headers.set("content-type", file.type || "application/octet-stream");
+          } else {
+            body = els.bodyBox.value;
+            if (body && !headers.has("content-type")) headers.set("content-type", "text/plain;charset=UTF-8");
+          }
+        }
+
+        setBusy(true);
+        lastRequest = { endpoint, method, headers: new Headers(headers), target, bodyPreview: body && typeof body !== 'string' ? `file:${(body.name||'blob')} (${body.size} bytes)` : (body || "") };
+
+        const res = await fetch(endpoint, { method, headers, body, redirect: "follow", credentials: "omit" });
+
+        // Status
+        els.statusCell.innerHTML = `<span class="status ${res.ok ? 'ok' : 'bad'}">${res.status} ${res.statusText}</span>`;
+
+        // Headers
+        els.respHeaders.textContent = headersToText(res.headers);
+
+        // Body preview
+        const ct = res.headers.get("content-type") || "";
+        const viewer = guessViewer(ct);
+        if (viewer === "json") {
+          const text = await res.text();
+          try {
+            els.respBody.textContent = JSON.stringify(JSON.parse(text), null, 2);
+          } catch {
+            els.respBody.textContent = text;
+          }
+          lastResponseBlob = new Blob([els.respBody.textContent], { type: "application/json" });
+        } else if (viewer === "text") {
+          const text = await res.text();
+          els.respBody.textContent = text;
+          lastResponseBlob = new Blob([text], { type: ct || "text/plain" });
+        } else {
+          lastResponseBlob = await res.blob();
+          els.respBody.textContent = `binary ${lastResponseBlob.type || ''} (${lastResponseBlob.size} bytes)\nUse Download or Raw.`;
+        }
+
+        // Enable actions
+        els.downloadBtn.disabled = false;
+        els.viewRawBtn.disabled = false;
+        els.copyCurlBtn.disabled = false;
+      } catch (err) {
+        console.error(err);
+        els.statusCell.innerHTML = `<span class="status bad">Error</span>`;
+        els.respHeaders.textContent = "";
+        els.respBody.textContent = String(err);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    els.downloadBtn.addEventListener("click", () => {
+      if (!lastResponseBlob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(lastResponseBlob);
+      a.download = "response";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    });
+
+    els.viewRawBtn.addEventListener("click", () => {
+      try {
+        const target = (els.addr.value || "").trim();
+        const endpoint = buildEndpoint(target);
+        window.open(endpoint, "_blank", "noopener,noreferrer");
+      } catch (e) { alert(e.message); }
+    });
+
+    els.copyCurlBtn.addEventListener("click", async () => {
+      if (!lastRequest) return;
+      const hParts = [];
+      for (const [k, v] of lastRequest.headers.entries()) {
+        hParts.push(`-H ${shellQuote(`${k}: ${v}`)}`);
+      }
+      let bodyPart = "";
+      if (lastRequest.bodyPreview && typeof lastRequest.bodyPreview === "string" && lastRequest.bodyPreview.length && !lastRequest.bodyPreview.startsWith("file:")) {
+        bodyPart = `--data-raw ${shellQuote(lastRequest.bodyPreview)}`;
+      }
+      const cmd = `curl -i -X ${lastRequest.method} ${hParts.join(" ")} ${bodyPart} ${shellQuote(lastRequest.endpoint)}`;
+      await navigator.clipboard.writeText(cmd);
+      toast("cURL copied");
+    });
+
+    // --------------------------
+    // Iframe “browser”
+    // --------------------------
+    els.openFrameBtn.addEventListener("click", () => {
+      try {
+        const u = (els.addr.value || "").trim();
+        if (!u) return alert("Enter a URL");
+        els.frame.src = buildEndpoint(u);
+      } catch (e) { alert(e.message); }
+    });
+    els.popoutBtn.addEventListener("click", () => {
+      try {
+        const u = (els.addr.value || "").trim();
+        if (!u) return alert("Enter a URL");
+        window.open(buildEndpoint(u), "_blank", "noopener,noreferrer");
+      } catch (e) { alert(e.message); }
+    });
+
+    // --------------------------
+    // WebSocket tester
+    // --------------------------
+    let ws = null;
+    els.wsConnect.addEventListener("click", () => {
+      try {
+        const raw = (els.wsUrl.value || "").trim();
+        if (!raw) return alert("Enter a ws/wss URL");
+        const base = (els.workerBase.value || "").trim();
+        if (!/^https?:\/\//i.test(base)) return alert("Set Worker base first");
+        const wsBase = base.replace(/^http/i, "ws").replace(/^https/i, "wss").replace(/\/+$/,"");
+        const endpoint = `${wsBase}/proxy/${toBase64Url(raw)}`;
+        logWs(`Connecting → ${endpoint}`);
+        ws = new WebSocket(endpoint);
+        ws.onopen = () => { toggleWs(true); logWs("OPEN"); };
+        ws.onmessage = (ev) => logWs(`RECV: ${typeof ev.data === 'string' ? ev.data : '[binary]'}`);
+        ws.onerror = () => logWs("ERROR");
+        ws.onclose = (ev) => { logWs(`CLOSE ${ev.code} ${ev.reason||''}`); toggleWs(false); ws = null; };
+      } catch (e) { alert(e.message); }
+    });
+    els.wsClose.addEventListener("click", () => { try { ws && ws.close(); } catch {} });
+    els.wsSend.addEventListener("click", () => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(els.wsMsg.value); logWs(`SEND: ${els.wsMsg.value}`); els.wsMsg.value = ""; }});
+    function toggleWs(open) {
+      els.wsConnect.disabled = open;
+      els.wsClose.disabled = !open;
+      els.wsSend.disabled = !open;
+    }
+    function logWs(line) { els.wsLog.textContent += (line + "\n"); els.wsLog.scrollTop = els.wsLog.scrollHeight; }
+
+    // --------------------------
+    // Config buttons
+    // --------------------------
+    els.saveCfg.addEventListener("click", saveState);
+    els.clearCfg.addEventListener("click", () => { localStorage.removeItem("static-proxy-state"); location.reload(); });
+    els.workerBase.addEventListener("input", updateCfgStatus);
+
+    // --------------------------
+    // Utilities
+    // --------------------------
+    function shellQuote(s) {
+      if (s === "") return "''";
+      if (!/[^\w@%+=:,./-]/.test(s)) return s;
+      return "'" + s.replace(/'/g, "'\"'\"'") + "'";
+    }
+    function setBusy(b) {
+      els.sendBtn.disabled = b;
+    }
+    function toast(msg) {
+      console.log(msg);
+    }
+  </script>
+</body>
+</html>

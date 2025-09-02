@@ -1,0 +1,8 @@
+{
+  "name": "static-yxorp-worker",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-02",
+  "compatibility_flags": [],
+  "usage_model": "bundled",
+  "workers_dev": true
+}
